@@ -1,0 +1,16 @@
+# Build artifacts
+*.zip
+
+# Test directories
+test/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
