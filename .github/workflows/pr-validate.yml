@@ -48,6 +48,7 @@ jobs:
               # Check required files
               required_files=("metadata.json" "policy-definition.yaml")
               required_dirs=("src" "docs")
+              optional_dirs=("assets")
 
               for file in "${required_files[@]}"; do
                 if [ ! -f "$version_dir/$file" ]; then
@@ -63,9 +64,52 @@ jobs:
                 fi
               done
 
+              # Check for optional assets directory (warning only)
+              for dir in "${optional_dirs[@]}"; do
+                if [ ! -d "$version_dir/$dir" ]; then
+                  echo "⚠️  Optional directory not found: $dir/ in $version_dir"
+                fi
+              done
+
+              # Validate docs directory contents
+              if [ -d "$version_dir/docs" ]; then
+                docs_required_files=("overview.md" "configuration.md" "examples.md")
+                docs_optional_files=("faq.md")
+                
+                for doc_file in "${docs_required_files[@]}"; do
+                  if [ ! -f "$version_dir/docs/$doc_file" ]; then
+                    echo "❌ Missing required docs file: docs/$doc_file in $version_dir"
+                    ((validation_errors++))
+                  fi
+                done
+                
+                # Check for changelog (can be README.md or CHANGELOG.md)
+                if [ ! -f "$version_dir/docs/README.md" ] && [ ! -f "$version_dir/docs/CHANGELOG.md" ]; then
+                  echo "⚠️  No changelog found: expected docs/README.md or docs/CHANGELOG.md in $version_dir"
+                fi
+              fi
+
               # Additional validation: Check if src contains Go files
               if [ -d "$version_dir/src" ] && [ -z "$(find "$version_dir/src" -name '*.go' 2>/dev/null)" ]; then
                 echo "⚠️  Warning: No Go files found in $version_dir/src"
+              fi
+
+              # Validate metadata.json structure (basic checks)
+              if [ -f "$version_dir/metadata.json" ]; then
+                # Check if it's valid JSON
+                if ! jq empty "$version_dir/metadata.json" 2>/dev/null; then
+                  echo "❌ Invalid JSON in metadata.json for $version_dir"
+                  ((validation_errors++))
+                else
+                  # Check required metadata fields
+                  required_metadata_fields=("name" "displayName" "provider" "categories" "description")
+                  for field in "${required_metadata_fields[@]}"; do
+                    if ! jq -e ".$field" "$version_dir/metadata.json" >/dev/null 2>&1; then
+                      echo "❌ Missing required metadata field: $field in $version_dir/metadata.json"
+                      ((validation_errors++))
+                    fi
+                  done
+                fi
               fi
 
             done < <(find "$policy_dir" -mindepth 1 -maxdepth 1 -type d -print0)
@@ -122,15 +166,38 @@ This PR does not add new policy versions."
           # Add helpful information
           comment+="
 ### Policy Structure Requirements
-- Version format: \`vX.Y.Z\` (semantic versioning)
-- Required files: \`metadata.json\`, \`policy-definition.yaml\`
-- Required directories: \`src/\` (Go code), \`docs/\` (documentation)
+
+#### Required Files:
+- \`metadata.json\` - Policy metadata with name, displayName, provider, categories, description
+- \`policy-definition.yaml\` - Policy definition with parameters schema and processing mode
+
+#### Required Directories:
+- \`src/\` - Go source code implementation
+- \`docs/\` - Documentation (see below)
+
+#### Documentation Structure (\`docs/\`):
+- \`overview.md\` - Policy overview and description
+- \`configuration.md\` - Configuration parameters and usage
+- \`examples.md\` - Usage examples and code samples
+- \`faq.md\` - Frequently asked questions (optional)
+- \`README.md\` or \`CHANGELOG.md\` - Version changelog
+
+#### Optional Directories:
+- \`assets/\` - Icons, banners, and other media files
+
+#### Metadata Requirements:
+The \`metadata.json\` must contain:
+- \`name\`, \`displayName\`, \`provider\`
+- \`categories\` (array), \`description\`
+- \`tags\` (optional), \`documentation\` mapping
 
 ### Next Steps
-1. Fix any validation errors
-2. Ensure PR is reviewed and approved
-3. Merge PR to main branch
-4. Create GitHub release to trigger batch publishing"
+1. Fix any validation errors shown above
+2. Ensure all required files and directories are present
+3. Verify metadata.json contains all required fields
+4. Ensure PR is reviewed and approved
+5. Merge PR to main branch
+6. Create GitHub release to trigger batch publishing"
 
           gh pr comment ${{ github.event.pull_request.number }} --body "$comment" || echo "Failed to post comment"
         env:
