@@ -48,6 +48,7 @@ runs:
 
         # Get added files in policies/
         added_files=$(git diff --name-only --diff-filter=A "${{ inputs.base-sha }}" "${{ inputs.head-sha }}" 2>/dev/null | grep '^policies/' | sort | uniq || echo "")
+        echo "Debug: Added files in policies/: $added_files"
 
         new_versions=""
         for file in $added_files; do
