@@ -112,17 +112,20 @@ runs:
           source_type="$config_source_type"
         fi
         
+        # Extract repo details for raw.githubusercontent.com URLs
+        repo_path=$(echo "${{ inputs.repo-url }}" | sed 's|https://github.com/||')
+        
         # Determine source URL based on source type
         if [[ "$source_type" == "s3" ]]; then
           source_url="https://${{ inputs.s3-bucket }}.s3.${{ env.AWS_REGION || 'us-east-1' }}.amazonaws.com/policies/${{ inputs.policy }}-${{ inputs.version }}.zip"
         else
           # GitHub raw repository URL for direct file access
-          source_url="${{ inputs.repo-url }}/raw/main/policies/${{ inputs.policy }}/${{ inputs.version }}"
+          source_url="https://raw.githubusercontent.com/$repo_path/main/policies/${{ inputs.policy }}/${{ inputs.version }}"
           source_type="github"
         fi
 
         # Always use GitHub raw URLs for policy resources (definition, docs, assets)
-        base_url="${{ inputs.repo-url }}/raw/main/$policy_dir"
+        base_url="https://raw.githubusercontent.com/$repo_path/main/$policy_dir"
         definition_url="$base_url/policy-definition.yaml"
         docs_base_url="$base_url/docs/"
         assets_base_url="$base_url/assets/"
