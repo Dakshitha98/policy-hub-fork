@@ -34,11 +34,18 @@ jobs:
       - name: Get base SHA
         id: get_base
         run: |
-          if [ -n "${{ steps.last_release.outputs.last_tag }}" ]; then
-            base_sha="${{ steps.last_release.outputs.last_tag }}"
-          else
-            # Use initial commit if no tags exist
+          current_tag="${{ github.event.release.tag_name }}"
+          last_tag="${{ steps.last_release.outputs.last_tag }}"
+          
+          # If last_tag is empty or same as current tag, this is the first release
+          if [ -z "$last_tag" ] || [ "$last_tag" = "$current_tag" ]; then
+            # Use initial commit for first release
             base_sha=$(git rev-list --max-parents=0 HEAD)
+            echo "First release detected, using initial commit: $base_sha"
+          else
+            # Use previous tag for subsequent releases
+            base_sha="$last_tag"
+            echo "Using previous release: $base_sha"
           fi
           echo "base_sha=$base_sha" >> $GITHUB_OUTPUT
         shell: bash
