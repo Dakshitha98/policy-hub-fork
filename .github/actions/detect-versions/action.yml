@@ -31,6 +31,8 @@ runs:
       id: detect
       run: |
         echo "🔍 Detecting new policy versions..."
+        echo "Base SHA: ${{ inputs.base-sha }}"
+        echo "Head SHA: ${{ inputs.head-sha }}"
 
         # Check if base-sha is valid
         if ! git rev-parse --verify "${{ inputs.base-sha }}" >/dev/null 2>&1; then
