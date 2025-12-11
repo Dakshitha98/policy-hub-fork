@@ -64,18 +64,18 @@ runs:
 
         # Construct API payload
         payload=$(cat <<EOF
-{
-  "policyName": "${{ inputs.policy }}",
-  "version": "${{ inputs.version }}",
-  "sourceType": "github",
-  "sourceUrl": "${{ inputs.repo-url }}",
-  "definitionUrl": "${{ inputs.repo-url }}/raw/main/$policy_dir/policy-definition.yaml",
-  "metadata": $metadata,
-  "docsBaseUrl": "${{ inputs.repo-url }}/raw/main/$policy_dir/docs/",
-  "assetsBaseUrl": "${{ inputs.repo-url }}/raw/main/$policy_dir/assets/"
-}
-EOF
-)
+        {
+          "policyName": "${{ inputs.policy }}",
+          "version": "${{ inputs.version }}",
+          "sourceType": "github",
+          "sourceUrl": "${{ inputs.repo-url }}",
+          "definitionUrl": "${{ inputs.repo-url }}/raw/main/$policy_dir/policy-definition.yaml",
+          "metadata": $metadata,
+          "docsBaseUrl": "${{ inputs.repo-url }}/raw/main/$policy_dir/docs/",
+          "assetsBaseUrl": "${{ inputs.repo-url }}/raw/main/$policy_dir/assets/"
+        }
+        EOF
+        )
 
         sync_url="${{ inputs.policy-hub-url }}/sync"
         if curl -X POST "$sync_url" \
