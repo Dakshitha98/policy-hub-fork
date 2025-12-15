@@ -1,0 +1,201 @@
+name: Reliable Policy Delivery
+
+on:
+  release:
+    types: [published]
+
+env:
+  POLICY_HUB_API_URL: ${{ vars.POLICY_HUB_API_URL }}
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  deliver-policies:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.target_commitish }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup delivery environment
+        run: |
+          # Make scripts executable
+          chmod +x scripts/prepare-zip.sh
+          chmod +x scripts/validate-policy.sh
+
+          # Install jq for JSON processing
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Detect candidate folders
+        id: detect
+        run: |
+          baseline_sha=$(cat .state/baseline.sha)
+          head_sha=${{ github.sha }}
+
+          echo "📊 Baseline SHA: $baseline_sha"
+          echo "📊 Head SHA: $head_sha"
+
+          # Get changed folders since baseline
+          changed_folders=$(git diff --name-only $baseline_sha..$head_sha | \
+            grep '^policies/' | \
+            cut -d'/' -f1-3 | \
+            sort -u)
+
+          echo "📁 Changed folders:"
+          echo "$changed_folders"
+
+          # Convert to JSON array for matrix
+          json_array="[]"
+          if [ -n "$changed_folders" ]; then
+            json_array="["
+            first=true
+            for folder in $changed_folders; do
+              if [ "$first" = true ]; then
+                first=false
+              else
+                json_array+=","
+              fi
+              json_array+="\"$folder\""
+            done
+            json_array+="]"
+          fi
+
+          echo "folders=$json_array" >> $GITHUB_OUTPUT
+          echo "📋 Candidate folders: $json_array"
+
+      - name: Deliver policies
+        if: steps.detect.outputs.folders != '[]'
+        run: |
+          folders="${{ steps.detect.outputs.folders }}"
+          delivered_file=".state/delivered.json"
+
+          echo "🚀 Starting folder-based delivery..."
+
+          # Process each folder
+          echo "$folders" | jq -r '.[]' | while read -r folder; do
+            echo "🔍 Processing folder: $folder"
+
+            # Extract policy and version
+            policy=$(echo $folder | cut -d'/' -f2)
+            version=$(echo $folder | cut -d'/' -f3)
+
+            # Get latest commit affecting this folder
+            latest_commit=$(git log -1 --format=%H -- "$folder")
+
+            # Check if already delivered and up to date
+            if [ -f "$delivered_file" ]; then
+              delivered_sha=$(jq -r ".\"$folder\" // empty" "$delivered_file")
+              if [ -n "$delivered_sha" ] && [ "$latest_commit" = "$delivered_sha" ]; then
+                echo "⏭️  Skipping $folder - already delivered (SHA: $delivered_sha)"
+                continue
+              fi
+            fi
+
+            echo "📦 Delivering $folder (commit: $latest_commit)"
+
+            # Validate policy first
+            if ! ./scripts/validate-policy.sh "$policy" "$version" >/dev/null 2>&1; then
+              echo "❌ Validation failed for $folder - skipping"
+              continue
+            fi
+
+            # Prepare ZIP
+            if ! ./scripts/prepare-zip.sh "$policy" "$version" >/dev/null 2>&1; then
+              echo "❌ ZIP preparation failed for $folder - skipping"
+              continue
+            fi
+
+            zip_file="$policy-$version.zip"
+
+            # Upload to S3
+            s3_path="s3://${{ vars.S3_BUCKET_NAME }}/policies/$zip_file"
+            if ! aws s3 cp "$zip_file" "$s3_path" --no-progress; then
+              echo "❌ S3 upload failed for $folder - will retry next release"
+              rm -f "$zip_file"
+              continue
+            fi
+
+            echo "✅ Uploaded $folder to S3"
+
+            # Sync with Policy Hub
+            repo_path="${{ github.repository }}"
+            source_url="https://${{ vars.S3_BUCKET_NAME }}.s3.${{ env.AWS_REGION }}.amazonaws.com/policies/$zip_file"
+            base_url="https://raw.githubusercontent.com/$repo_path/main/$folder"
+
+            # Read metadata
+            metadata=$(cat "$folder/metadata.json" 2>/dev/null || echo "{}")
+
+            payload=$(cat <<EOF
+          {
+            "policyName": "$policy",
+            "version": "$version",
+            "sourceType": "s3",
+            "sourceUrl": "$source_url",
+            "definitionUrl": "$base_url/policy-definition.yaml",
+            "metadata": $metadata,
+            "docsBaseUrl": "$base_url/docs/",
+            "assetsBaseUrl": "$base_url/assets/",
+            "idempotencyKey": "$folder:$latest_commit"
+          }
+          EOF
+          )
+
+            response=$(curl -X POST "${{ env.POLICY_HUB_API_URL }}/sync" \
+              -H "Authorization: Bearer ${{ secrets.POLICY_HUB_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -H "ngrok-skip-browser-warning: true" \
+              -d "$payload" \
+              --max-time 30 \
+              -w "HTTP_CODE:%{http_code}" \
+              -s)
+
+            http_code=$(echo "$response" | grep -o "HTTP_CODE:[0-9]*" | cut -d: -f2)
+            response_body=$(echo "$response" | sed 's/HTTP_CODE:[0-9]*$//')
+
+            if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
+              api_success=$(echo "$response_body" | jq -r '.success // false' 2>/dev/null || echo "false")
+
+              if [[ "$api_success" == "true" ]]; then
+                echo "✅ Successfully delivered $folder"
+
+                # Update delivered state
+                jq ".\"$folder\" = \"$latest_commit\"" "$delivered_file" > "${delivered_file}.tmp"
+                mv "${delivered_file}.tmp" "$delivered_file"
+
+                echo "📝 Updated delivery state for $folder"
+              else
+                echo "❌ Policy Hub sync failed for $folder - will retry next release"
+              fi
+            else
+              echo "❌ Policy Hub sync failed (HTTP $http_code) for $folder - will retry next release"
+            fi
+
+            # Cleanup
+            rm -f "$zip_file"
+
+          done
+
+          echo "🎉 Delivery process completed"
+
+      - name: Commit state updates
+        run: |
+          if git diff --quiet .state/; then
+            echo "📋 No state changes to commit"
+          else
+            echo "📝 Committing state updates..."
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add .state/
+            git commit -m "Update delivery state after release ${{ github.event.release.tag_name }}"
+            git push
+            echo "✅ State updates committed and pushed"
+          fi
